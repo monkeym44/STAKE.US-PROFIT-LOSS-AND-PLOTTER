@@ -1,3 +1,173 @@
+
+import customtkinter as ctk
+import csv
+import requests
+import json
+import os
+import re
+from tkinter import filedialog
+from datetime import datetime
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
+CACHE_FILE = "price_cache.json"
+
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("Crypto P/L Tracker (Historical)")
+        self.geometry("1000x700")
+
+        self.purchase_file = None
+        self.redeem_file = None
+        self.transactions_processed = []
+
+        self.price_cache = self.load_cache()
+
+        self.symbol_map = {
+            "btc": "bitcoin",
+            "eth": "ethereum",
+            "ltc": "litecoin",
+            "usdt": "tether",
+            "usdc": "usd-coin",
+            "sol": "solana",
+            "xrp": "ripple",
+            "bch": "bitcoin-cash"
+        }
+
+        # UI
+        top = ctk.CTkFrame(self)
+        top.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkButton(top, text="Upload Purchases", command=self.load_purchase).pack(side="left", padx=5)
+        ctk.CTkButton(top, text="Upload Redeems", command=self.load_redeem).pack(side="left", padx=5)
+        ctk.CTkButton(top, text="Process", command=self.process_files).pack(side="left", padx=5)
+        ctk.CTkButton(top, text="Export CSV", command=self.export_csv).pack(side="left", padx=5)
+
+        self.summary = ctk.CTkLabel(self, text="Ready", font=("Arial", 16))
+        self.summary.pack(pady=10)
+
+        self.textbox = ctk.CTkTextbox(self)
+        self.textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # ===== CACHE =====
+    def load_cache(self):
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    def save_cache(self):
+        with open(CACHE_FILE, "w") as f:
+            json.dump(self.price_cache, f)
+
+    # ===== FILE LOAD =====
+    def load_purchase(self):
+        self.purchase_file = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+
+    def load_redeem(self):
+        self.redeem_file = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+
+    # ===== ROBUST DATE PARSER =====
+    def parse_date(self, s):
+        if not s:
+            return None
+
+        try:
+            # Handles: Sun Apr 26 2026 22:00:10 GMT+0000
+            pattern = r"[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})"
+            m = re.search(pattern, s)
+
+            if m:
+                month_str, day, year, time_part = m.groups()
+
+                month_map = {
+                    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+                    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
+                    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
+                }
+
+                month = month_map.get(month_str)
+                if not month:
+                    return None
+
+                h, m_, s_ = map(int, time_part.split(":"))
+
+                return datetime(int(year), month, int(day), h, m_, s_)
+
+            # fallback: YYYY-MM-DD
+            iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+            if iso:
+                y, mo, d = map(int, iso.groups())
+                return datetime(y, mo, d)
+
+        except:
+            return None
+
+        return None
+
+    # ===== PRICE =====
+    def get_price(self, coin_id, date):
+        key = f"{coin_id}_{date.strftime('%d-%m-%Y')}"
+
+        if key in self.price_cache:
+            return self.price_cache[key]
+
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/history?date={date.strftime('%d-%m-%Y')}"
+
+        try:
+            res = requests.get(url, timeout=10)
+            data = res.json()
+
+            price = data["market_data"]["current_price"]["usd"]
+
+            self.price_cache[key] = price
+            return price
+
+        except Exception as e:
+            self.textbox.insert("end", f"[PRICE ERROR] {coin_id}: {e}\n")
+            return None
+
+    # ===== CSV READ =====
+    def read_csv(self, path, tx_type):
+        out = []
+        skipped = 0
+
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+
+            for i, row in enumerate(reader, start=2):
+                try:
+                    amt = float(row["amount"])
+                    cur = row["currency"].lower().strip()
+                    dt = self.parse_date(row.get("date"))
+
+                    if cur == "bcc":
+                        cur = "bch"
+
+                    if not dt:
+                        raise ValueError("Bad date")
+
+                    out.append({
+                        "amount": amt,
+                        "currency": cur,
+                        "date": dt,
+                        "type": tx_type
+                    })
+
+                except Exception as e:
+                    skipped += 1
+                    self.textbox.insert("end", f"[SKIP {i}] {e} | {row}\n")
+
+        return out, skipped
+
+    # ===== PROCESS =====
 def process_files(self):
     if not self.purchase_file or not self.redeem_file:
         self.summary.configure(text="Upload both CSVs")
@@ -70,3 +240,34 @@ def process_files(self):
     self.summary.configure(
         text=f"Buy: ${total_buy:,.2f} | Sell: ${total_sell:,.2f} | P/L: ${pl:,.2f} | Skipped: {s1+s2}"
     )
+
+    # ===== EXPORT =====
+    def export_csv(self):
+        if not self.transactions_processed:
+            self.summary.configure(text="Nothing to export")
+            return
+
+        file = filedialog.asksaveasfilename(defaultextension=".csv")
+        if not file:
+            return
+
+        with open(file, "w", newline="") as f:
+            writer = csv.writer(f)
+
+            writer.writerow(["date", "type", "amount", "crypto", "usd_value"])
+
+            for r in self.transactions_processed:
+                writer.writerow([
+                    r["date"],
+                    r["type"],
+                    r["amount"],
+                    r["currency"],
+                    f"{r['usd']:.2f}"
+                ])
+
+        self.summary.configure(text="Export complete")
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
