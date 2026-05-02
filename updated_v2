@@ -1,0 +1,201 @@
+import customtkinter as ctk
+import csv
+import requests
+from tkinter import filedialog
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("Transaction Profit/Loss Viewer (USD)")
+        self.geometry("950x650")
+
+        self.purchase_file = None
+        self.redeem_file = None
+        self.price_map = {}
+
+        # ===== TOP =====
+        top_frame = ctk.CTkFrame(self)
+        top_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkButton(top_frame, text="Upload Purchases CSV",
+                      command=self.load_purchase).pack(side="left", padx=5)
+
+        ctk.CTkButton(top_frame, text="Upload Redeems CSV",
+                      command=self.load_redeem).pack(side="left", padx=5)
+
+        ctk.CTkButton(top_frame, text="Process",
+                      command=self.process_files).pack(side="left", padx=5)
+
+        # ===== SUMMARY =====
+        self.summary_label = ctk.CTkLabel(
+            self, text="Upload both CSV files and click Process",
+            font=("Arial", 16)
+        )
+        self.summary_label.pack(pady=10)
+
+        # ===== LOG =====
+        self.textbox = ctk.CTkTextbox(self)
+        self.textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # ===== FILE LOAD =====
+    def load_purchase(self):
+        file = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+        if file:
+            self.purchase_file = file
+            self.summary_label.configure(text="Purchases file loaded")
+
+    def load_redeem(self):
+        file = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+        if file:
+            self.redeem_file = file
+            self.summary_label.configure(text="Redeems file loaded")
+
+    # ===== FETCH PRICES =====
+    def fetch_prices(self, currencies):
+        # Map common symbols → CoinGecko IDs
+        symbol_map = {
+            "btc": "bitcoin",
+            "eth": "ethereum",
+            "ltc": "litecoin",
+            "usdt": "tether",
+            "usdc": "usd-coin",
+            "sol": "solana",
+            "xrp": "ripple",
+            "bch": "bitcoin-cash"
+        }
+
+        ids = []
+        for c in currencies:
+            cid = symbol_map.get(c.lower())
+            if cid:
+                ids.append(cid)
+
+        if not ids:
+            return {}
+
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids)}&vs_currencies=usd"
+
+        try:
+            res = requests.get(url, timeout=10)
+            data = res.json()
+
+            price_map = {}
+            for sym, cid in symbol_map.items():
+                if cid in data:
+                    price_map[sym] = data[cid]["usd"]
+
+            return price_map
+
+        except Exception as e:
+            self.textbox.insert("end", f"[ERROR] Failed to fetch prices: {e}\n")
+            return {}
+
+    # ===== CSV READER =====
+    def read_csv(self, file_path, tx_type):
+        transactions = []
+        skipped = 0
+
+        with open(file_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+
+            for line_num, row in enumerate(reader, start=2):
+                try:
+                    if not row.get("amount") or not row.get("currency"):
+                        raise ValueError("Missing amount or currency")
+
+                    amount = float(row["amount"])
+                    currency = row["currency"].lower()
+
+                    tx = {
+                        "amount": amount,
+                        "currency": currency,
+                        "type": tx_type,
+                    }
+                    transactions.append(tx)
+
+                except Exception as e:
+                    skipped += 1
+                    self.textbox.insert(
+                        "end",
+                        f"[SKIPPED] Line {line_num} | {e}\nRow: {row}\n\n"
+                    )
+
+        return transactions, skipped
+
+    # ===== PROCESS =====
+    def process_files(self):
+        if not self.purchase_file or not self.redeem_file:
+            self.summary_label.configure(text="Please upload both CSV files")
+            return
+
+        self.textbox.delete("1.0", "end")
+
+        purchases, skipped_p = self.read_csv(self.purchase_file, "purchase")
+        redeems, skipped_r = self.read_csv(self.redeem_file, "redeem")
+
+        all_tx = purchases + redeems
+
+        # ===== FETCH PRICES =====
+        currencies = {tx["currency"] for tx in all_tx}
+        self.price_map = self.fetch_prices(currencies)
+
+        total_purchased_usd = 0.0
+        total_redeemed_usd = 0.0
+
+        self.textbox.insert("end", "=== TRANSACTIONS (USD VALUE) ===\n\n")
+
+        for tx in all_tx:
+            price = self.price_map.get(tx["currency"])
+
+            if not price:
+                self.textbox.insert(
+                    "end",
+                    f"[UNKNOWN] {tx['amount']} {tx['currency']} (no price data)\n"
+                )
+                continue
+
+            usd_value = tx["amount"] * price
+
+            if tx["type"] == "purchase":
+                total_purchased_usd += usd_value
+                self.textbox.insert(
+                    "end",
+                    f"[BUY ] +{tx['amount']} {tx['currency']} "
+                    f"= ${usd_value:,.2f}\n"
+                )
+            else:
+                total_redeemed_usd += usd_value
+                self.textbox.insert(
+                    "end",
+                    f"[SELL] -{tx['amount']} {tx['currency']} "
+                    f"= ${usd_value:,.2f}\n"
+                )
+
+        profit_loss = total_redeemed_usd - total_purchased_usd
+        total_skipped = skipped_p + skipped_r
+
+        summary = (
+            f"Total Purchased (USD): ${total_purchased_usd:,.2f}\n"
+            f"Total Redeemed  (USD): ${total_redeemed_usd:,.2f}\n"
+            f"Net P/L         (USD): ${profit_loss:,.2f}\n"
+            f"Transactions         : {len(all_tx)}\n"
+            f"Skipped Rows         : {total_skipped}"
+        )
+
+        self.summary_label.configure(text=summary)
+
+        if total_skipped > 0:
+            self.textbox.insert(
+                "end",
+                f"\n⚠️ WARNING: {total_skipped} rows were skipped.\n"
+            )
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
