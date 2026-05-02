@@ -1,4 +1,3 @@
-
 import customtkinter as ctk
 import csv
 import requests
@@ -168,78 +167,78 @@ class App(ctk.CTk):
         return out, skipped
 
     # ===== PROCESS =====
-def process_files(self):
-    if not self.purchase_file or not self.redeem_file:
-        self.summary.configure(text="Upload both CSVs")
-        return
+    def process_files(self):
+        if not self.purchase_file or not self.redeem_file:
+            self.summary.configure(text="Upload both CSVs")
+            return
 
-    self.textbox.delete("1.0", "end")
-    self.transactions_processed = []
+        self.textbox.delete("1.0", "end")
+        self.transactions_processed = []
 
-    buys, s1 = self.read_csv(self.purchase_file, "purchase")
-    sells, s2 = self.read_csv(self.redeem_file, "redeem")
+        buys, s1 = self.read_csv(self.purchase_file, "purchase")
+        sells, s2 = self.read_csv(self.redeem_file, "redeem")
 
-    all_tx = buys + sells
+        all_tx = buys + sells
 
-    total_buy = 0
-    total_sell = 0
+        total_buy = 0
+        total_sell = 0
 
-    self.textbox.insert("end", "=== PROCESSING (LIVE) ===\n\n")
-    self.update_idletasks()
-
-    for i, tx in enumerate(all_tx, start=1):
-        cid = self.symbol_map.get(tx["currency"])
-
-        if not cid:
-            self.textbox.insert("end", f"[UNKNOWN] {tx['currency']}\n")
-            self.update_idletasks()
-            continue
-
-        price = self.get_price(cid, tx["date"])
-
-        if not price:
-            self.textbox.insert("end", f"[PRICE FAIL] {tx['currency']}\n")
-            self.update_idletasks()
-            continue
-
-        usd = tx["amount"] * price
-        date_str = tx["date"].strftime("%m-%d-%Y")
-
-        record = {
-            "date": date_str,
-            "type": tx["type"],
-            "amount": tx["amount"],
-            "currency": tx["currency"],
-            "usd": usd
-        }
-
-        self.transactions_processed.append(record)
-
-        if tx["type"] == "purchase":
-            total_buy += usd
-            line = f"[{i}] [BUY ] {date_str} {tx['amount']} {tx['currency']} = ${usd:,.2f}\n"
-        else:
-            total_sell += usd
-            line = f"[{i}] [SELL] {date_str} {tx['amount']} {tx['currency']} = ${usd:,.2f}\n"
-
-        self.textbox.insert("end", line)
-
-        # 🔥 CRITICAL: force UI update immediately
-        self.textbox.see("end")
+        self.textbox.insert("end", "=== PROCESSING (LIVE) ===\n\n")
         self.update_idletasks()
 
-        # optional: save cache every few rows (safer if crash)
-        if i % 5 == 0:
-            self.save_cache()
+        for i, tx in enumerate(all_tx, start=1):
+            cid = self.symbol_map.get(tx["currency"])
 
-    # final save
-    self.save_cache()
+            if not cid:
+                self.textbox.insert("end", f"[UNKNOWN] {tx['currency']}\n")
+                self.update_idletasks()
+                continue
 
-    pl = total_sell - total_buy
+            price = self.get_price(cid, tx["date"])
 
-    self.summary.configure(
-        text=f"Buy: ${total_buy:,.2f} | Sell: ${total_sell:,.2f} | P/L: ${pl:,.2f} | Skipped: {s1+s2}"
-    )
+            if not price:
+                self.textbox.insert("end", f"[PRICE FAIL] {tx['currency']}\n")
+                self.update_idletasks()
+                continue
+
+            usd = tx["amount"] * price
+            date_str = tx["date"].strftime("%m-%d-%Y")
+
+            record = {
+                "date": date_str,
+                "type": tx["type"],
+                "amount": tx["amount"],
+                "currency": tx["currency"],
+                "usd": usd
+            }
+
+            self.transactions_processed.append(record)
+
+            if tx["type"] == "purchase":
+                total_buy += usd
+                line = f"[{i}] [BUY ] {date_str} {tx['amount']} {tx['currency']} = ${usd:,.2f}\n"
+            else:
+                total_sell += usd
+                line = f"[{i}] [SELL] {date_str} {tx['amount']} {tx['currency']} = ${usd:,.2f}\n"
+
+            self.textbox.insert("end", line)
+
+            # 🔥 CRITICAL: force UI update immediately
+            self.textbox.see("end")
+            self.update_idletasks()
+
+            # optional: save cache every few rows (safer if crash)
+            if i % 5 == 0:
+                self.save_cache()
+
+        # final save
+        self.save_cache()
+
+        pl = total_sell - total_buy
+
+        self.summary.configure(
+            text=f"Buy: ${total_buy:,.2f} | Sell: ${total_sell:,.2f} | P/L: ${pl:,.2f} | Skipped: {s1+s2}"
+        )
 
     # ===== EXPORT =====
     def export_csv(self):
